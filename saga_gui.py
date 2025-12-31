@@ -214,8 +214,16 @@ class GaussianSplattingGUI:
         self.load_model = False
         print("loading model file...")
         self.engine['scene'].load_ply(self.opt.SCENE_PCD_PATH)
-        self.engine['feature'].load_ply(self.opt.FEATURE_PCD_PATH)
-        self.engine['scale_gate'].load_state_dict(torch.load(self.opt.SCALE_GATE_PATH))
+        if os.path.exists(self.opt.FEATURE_PCD_PATH):
+            self.engine['feature'].load_ply(self.opt.FEATURE_PCD_PATH)
+        else:
+            # Fallback: initialize feature gaussians from the scene point cloud when contrastive features are absent
+            self.engine['feature'].load_ply_from_3dgs(self.opt.SCENE_PCD_PATH)
+
+        if os.path.exists(self.opt.SCALE_GATE_PATH):
+            self.engine['scale_gate'].load_state_dict(torch.load(self.opt.SCALE_GATE_PATH))
+        else:
+            print(f"Scale gate not found at {self.opt.SCALE_GATE_PATH}, using default initialization.")
         self.do_pca()   # calculate self.proj_mat
         self.load_model = True
 
@@ -549,8 +557,9 @@ class GaussianSplattingGUI:
         mean = torch.mean(X, dim=0)
         X = X - mean
         covariance_matrix = (1 / n) * torch.matmul(X.T, X).float()  # An old torch bug: matmul float32->float16, 
-        eigenvalues, eigenvectors = torch.eig(covariance_matrix, eigenvectors=True)
-        eigenvalues = torch.norm(eigenvalues, dim=1)
+        eigenvalues, eigenvectors = torch.linalg.eig(covariance_matrix)
+        eigenvalues = eigenvalues.real
+        eigenvectors = eigenvectors.real
         idx = torch.argsort(-eigenvalues)
         eigenvectors = eigenvectors[:, idx]
         proj_mat = eigenvectors[:, 0:n_components]

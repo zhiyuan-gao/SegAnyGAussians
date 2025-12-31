@@ -1,0 +1,8 @@
+360_extra_scenes/
+.DS_Store
+Thumbs.db
+__pycache__/
+sagav2/
+third_party/pytorch3d/
+submodules/
+segmentation_res/

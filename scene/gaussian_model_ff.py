@@ -687,6 +687,9 @@ class FeatureGaussianModel:
 
         # self.active_sh_degree = self.max_sh_degree
 
+        self.segment_times = 0
+        self._mask = torch.ones((self._xyz.shape[0],), dtype=torch.float, device="cuda")
+
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:

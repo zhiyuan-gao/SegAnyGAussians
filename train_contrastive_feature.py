@@ -153,7 +153,17 @@ def training(dataset, opt, pipe, iteration, saving_iterations, checkpoint_iterat
             mask_scales, sort_indices = torch.sort(mask_scales, descending=True)
             sam_masks = sam_masks[sort_indices, :, :]
 
-            num_sampled_scales = 8
+            # Heavier downsample to fit in limited VRAM; adjust here if you have more memory
+            downsample_factor = 8
+            if downsample_factor > 1:
+                sam_masks = torch.nn.functional.interpolate(
+                    sam_masks.unsqueeze(1),
+                    scale_factor=1.0 / downsample_factor,
+                    mode='bilinear',
+                ).squeeze(1)
+                sam_masks = (sam_masks > 0.5).float()
+
+            num_sampled_scales = 1
 
             sampled_scale_index = torch.randperm(len(mask_scales))[:num_sampled_scales]
 
@@ -234,7 +244,7 @@ def training(dataset, opt, pipe, iteration, saving_iterations, checkpoint_iterat
         rendered_feature_norm = rendered_features.norm(dim = 0, p=2).mean()
         rendered_feature_norm_reg = (1-rendered_feature_norm)**2
 
-        rendered_features = torch.nn.functional.interpolate(rendered_features.unsqueeze(0), viewpoint_cam.original_masks.shape[-2:], mode='bilinear').squeeze(0)
+        rendered_features = torch.nn.functional.interpolate(rendered_features.unsqueeze(0), sam_masks.shape[-2:], mode='bilinear').squeeze(0)
 
         # N_sampled_scales 32
         if scale_aware_dim <= 0 or scale_aware_dim >= 32:
