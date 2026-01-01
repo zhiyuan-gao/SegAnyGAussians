@@ -11,16 +11,12 @@ The official implementation of [SAGA (Segment Any 3D GAussians)](https://arxiv.o
 # Installation
 The installation of SAGA is similar to [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting).
 ```bash
-git clone git@github.com:Jumpat/SegAnyGAussians.git
+git clone https://github.com/zhiyuan-gao/SegAnyGAussians.git
 ```
-or
+Then install the dependencies (current working env):
 ```bash
-git clone https://github.com/Jumpat/SegAnyGAussians.git
-```
-Then install the dependencies:
-```bash
-conda env create --file environment.yml
-conda activate gaussian_splatting
+conda env create --file environment_sags_py310.yml
+conda activate sags_py310
 ```
 In default, we use the public ViT-H model for SAM. You can download the pre-trained model from [here](https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth) and put it under ./third_party/segment-anything/sam_ckpt.
 
