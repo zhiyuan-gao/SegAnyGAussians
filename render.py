@@ -21,7 +21,7 @@ from utils.general_utils import safe_state
 from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background, target, precomputed_mask = None):
+def render_set(model_path, name, iteration, views, gaussians, pipeline, background, target, precomputed_mask = None, precomputed_mask_bool = None, mask_thresh = 0.7):
     mask_only = target == 'target_mask'
     render_dir_name = "target_masks" if mask_only else "renders"
     render_dir_name_unocc = "target_masks_no_occ" if mask_only else None
@@ -49,31 +49,29 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
 
         if target == 'target_mask':
-            assert precomputed_mask is not None, "Rendering target-only mask requires a precomputed mask."
-            mask_res = render_mask(view, gaussians, pipeline, background, precomputed_mask=precomputed_mask)
-            mask = mask_res["mask"]
-            mask[mask < 0.5] = 0
-            mask[mask != 0] = 1
-            mask = mask[0, :, :]
-            torchvision.utils.save_image(mask, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+            assert precomputed_mask is not None and precomputed_mask_bool is not None, "Rendering target masks requires precomputed mask (float + bool)."
 
-            # Unoccluded version: drop non-target Gaussians so目标不受遮挡
+            # Visible-only mask: occluders remain, target is masked by depth
+            vis_res = render_mask(view, gaussians, pipeline, background, precomputed_mask=precomputed_mask)
+            vis_mask = vis_res["mask"]
+            vis_mask = (vis_mask > mask_thresh).float()
+            vis_mask = vis_mask[0] if vis_mask.dim() == 3 else vis_mask
+            torchvision.utils.save_image(vis_mask, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+
+            # Unoccluded mask: drop non-target Gaussians so target is fully visible
             if render_dir_name_unocc is not None:
-                target_bool = precomputed_mask[:, 0] > 0 if precomputed_mask.dim() > 1 else precomputed_mask.bool()
-                filter_mask = ~target_bool  # True => discard non-target
-                override_mask = precomputed_mask
+                filter_mask = ~precomputed_mask_bool.squeeze()
                 unocc_res = render_with_depth(
                     view,
                     gaussians,
                     pipeline,
                     background,
-                    override_mask=override_mask,
+                    override_mask=precomputed_mask,
                     filtered_mask=filter_mask,
                 )
                 unocc_mask = unocc_res["mask"]
-                if unocc_mask.dim() == 3:
-                    unocc_mask = unocc_mask[0]
-                unocc_mask = (unocc_mask > 0.5).float()
+                unocc_mask = (unocc_mask > mask_thresh).float()
+                unocc_mask = unocc_mask[0] if unocc_mask.dim() == 3 else unocc_mask
                 torchvision.utils.save_image(
                     unocc_mask,
                     os.path.join(
@@ -97,7 +95,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
         if target == 'seg':
             mask = mask_res["mask"]
-            mask[mask < 0.5] = 0
+            mask[mask < mask_thresh] = 0
             mask[mask != 0] = 1
             mask = mask[0, :, :]
             torchvision.utils.save_image(mask, os.path.join(mask_path, '{0:05d}'.format(idx) + ".png"))
@@ -111,7 +109,7 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         
         
 
-def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, segment : bool = False, target = 'scene', idx = 0, precomputed_mask = None):
+def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, segment : bool = False, target = 'scene', idx = 0, precomputed_mask = None, mask_thresh = 0.7):
     dataset.need_features = dataset.need_masks = False
     if not hasattr(dataset, "allow_principle_point_shift"):
         dataset.allow_principle_point_shift = True
@@ -119,17 +117,15 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         assert target == 'seg' or target == 'coarse_seg_everything' or precomputed_mask is not None and "Segmentation only works with target seg!"
     gaussians, feature_gaussians = None, None
     with torch.no_grad():
+        precomputed_mask_bool = None
         if precomputed_mask is not None:
             if '.pt' in precomputed_mask:
                 precomputed_mask = torch.load(precomputed_mask)
             elif '.npy' in precomputed_mask:
                 import numpy as np
                 precomputed_mask = torch.from_numpy(np.load(precomputed_mask)).cuda()
-                precomputed_mask[precomputed_mask > 0] = 1
-                precomputed_mask[precomputed_mask != 1] = 0
-                precomputed_mask = precomputed_mask.bool()
-            # keep boolean for segmenting; convert to float later only for mask rendering
-            precomputed_mask = precomputed_mask.bool().cuda()
+            precomputed_mask = precomputed_mask.bool()
+            precomputed_mask_bool = precomputed_mask.cuda()
 
         if target == 'scene' or target == 'seg' or target == 'coarse_seg_everything' or target == 'xyz' or target == 'target_mask':
             gaussians = GaussianModel(dataset.sh_degree)
@@ -138,7 +134,7 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
 
         scene = Scene(dataset, gaussians, feature_gaussians, load_iteration=iteration, shuffle=False, mode='eval', target=target if target != 'xyz' and precomputed_mask is None else 'scene')
 
-        if segment:
+        if segment and target != 'target_mask':
             gaussians.segment(precomputed_mask)
 
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
@@ -149,15 +145,13 @@ def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParam
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         # For 2D mask rendering the rasterizer expects float colors
-        render_mask_arg = precomputed_mask
-        if target in ['seg', 'target_mask'] and precomputed_mask is not None:
-            render_mask_arg = precomputed_mask.float()
+        render_mask_arg = precomputed_mask_bool.float() if precomputed_mask_bool is not None else None
 
         if not skip_train:
-             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, target, precomputed_mask=render_mask_arg)
+             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, target, precomputed_mask=render_mask_arg, precomputed_mask_bool=precomputed_mask_bool, mask_thresh=mask_thresh)
 
         if not skip_test:
-             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, target, precomputed_mask=render_mask_arg)
+             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, target, precomputed_mask=render_mask_arg, precomputed_mask_bool=precomputed_mask_bool, mask_thresh=mask_thresh)
 
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -172,6 +166,7 @@ if __name__ == "__main__":
     parser.add_argument('--target', default='scene', const='scene', nargs='?', choices=['scene', 'seg', 'feature', 'coarse_seg_everything', 'contrastive_feature', 'xyz', 'target_mask'])
     parser.add_argument('--idx', default=0, type=int)
     parser.add_argument('--precomputed_mask', default=None, type=str)
+    parser.add_argument('--mask_thresh', default=0.7, type=float)
 
     args = get_combined_args(parser)
     print("Rendering " + args.model_path)
@@ -184,4 +179,4 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.segment, args.target, args.idx, args.precomputed_mask)
+    render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.segment, args.target, args.idx, args.precomputed_mask, args.mask_thresh)
